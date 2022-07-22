@@ -109,11 +109,20 @@ func newSentPacketHandler(
 	tracer logging.ConnectionTracer,
 	logger utils.Logger,
 ) *sentPacketHandler {
-	congestion := congestion.NewCubicSender(
-		congestion.DefaultClock{},
+
+	// Cubic Sender
+	// congestion := congestion.NewCubicSender(
+	// 	congestion.DefaultClock{},
+	// 	rttStats,
+	// 	initialMaxDatagramSize,
+	// 	true, // use Reno
+	// 	tracer,
+	// )
+
+	// Reproduced PCC Allegro Sender
+	congestion := congestion.NewReproducedPccAllegroSender(
 		rttStats,
 		initialMaxDatagramSize,
-		true, // use Reno
 		tracer,
 	)
 
