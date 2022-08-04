@@ -4,6 +4,7 @@ go 1.19
 
 require (
 	github.com/francoispqt/gojay v1.2.13
+	github.com/go-python/cpy3 v0.2.0
 	github.com/golang/mock v1.6.0
 	github.com/onsi/ginkgo/v2 v2.2.0
 	github.com/onsi/gomega v1.20.1

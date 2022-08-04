@@ -125,7 +125,14 @@ func newSentPacketHandler(
 	// )
 
 	// Reproduced PCC Allegro Sender
-	congestion := congestion.NewReproducedPccAllegroSender(
+	// congestion := congestion.NewReproducedPccAllegroSender(
+	// 	rttStats,
+	// 	initialMaxDatagramSize,
+	// 	tracer,
+	// )
+
+	// Reproduced PCC Aurora Sender
+	congestion := congestion.NewReproducedPccAuroraSender(
 		rttStats,
 		initialMaxDatagramSize,
 		tracer,

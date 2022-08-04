@@ -17,7 +17,7 @@ const (
 	PccKProbingStepSize                          = 0.01
 	PccKMaxProbingStepSize                       = 0.05
 	PccKDecisionMadeStepSize                     = 0.02
-	PccNRttInterval                    float64   = 1.5
+	PccNRttInterval                    float64   = 3
 	PccKInitialRTT                               = 10 * time.Millisecond
 	PccKNumIntervalGroupsInProbing               = 2
 	PccKRttFluctuationToleranceRatio             = 0.2
@@ -517,6 +517,7 @@ func (c *ReproducedPccAllegroSender) OnLostPccMonitorInterval(
 		return
 	}
 	mi.BytesLost += bytes
+	mi.LastPacketAckedTime = time.Now() // Since no event time passed, assume now.
 }
 
 func CalculateUtilityAllegroV1(mi *PccMonitorInterval) float64 {
