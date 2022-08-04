@@ -30,11 +30,17 @@ var pccPythonRateController *PccPythonRateController
 type ReproducedPccAuroraSender struct {
 	pcc              *ReproducedPccAllegroSender
 	pyRateController *PccPythonRateController
+
+	UseSlowStart             bool
+	hybridSlowStart          HybridSlowStart
+	largestSentPacketNumber  protocol.PacketNumber
+	largestAckedPacketNumber protocol.PacketNumber
 }
 
 func NewReproducedPccAuroraSender(
 	rttStats *utils.RTTStats,
 	initialMaxDatagramSize protocol.ByteCount,
+	useSlowStart bool,
 	tracer logging.ConnectionTracer,
 ) *ReproducedPccAuroraSender {
 	return newReproducedPccAuroraSender(
@@ -42,6 +48,7 @@ func NewReproducedPccAuroraSender(
 		initialMaxDatagramSize,
 		initialCongestionWindow*initialMaxDatagramSize,
 		protocol.MaxCongestionWindowPackets*initialMaxDatagramSize,
+		useSlowStart,
 		tracer,
 	)
 }
@@ -51,6 +58,7 @@ func newReproducedPccAuroraSender(
 	initialMaxDatagramSize,
 	initialCongestionWindow,
 	initialMaxCongestionWindow protocol.ByteCount,
+	useSlowStart bool,
 	tracer logging.ConnectionTracer,
 ) *ReproducedPccAuroraSender {
 	for i, ivar := range os.Args {
@@ -65,11 +73,15 @@ func newReproducedPccAuroraSender(
 			tracer:          tracer,
 			maxDatagramSize: initialMaxDatagramSize,
 		},
+		UseSlowStart: useSlowStart,
 	}
 
 	// Configuring Starting Mode
-	// c.pcc.Mode = PccSenderModeStarting
-	c.pcc.Mode = PccSenderModePccProbing
+	if c.UseSlowStart {
+		c.pcc.Mode = PccSenderModeStarting
+	} else {
+		c.pcc.Mode = PccSenderModePccProbing
+	}
 	c.pcc.pccRateDirection = PccRateDirectionIncrease
 	c.pcc.lastTimeChangeSendingRate = time.Now()
 	c.pcc.pccRounds = 1
@@ -128,6 +140,11 @@ func (c *ReproducedPccAuroraSender) OnPacketSent(
 	if !isRetransmittable {
 		return
 	}
+	// To support aurora with slow start experiment
+	c.largestSentPacketNumber = packetNumber
+	c.hybridSlowStart.OnPacketSent(packetNumber)
+
+	// Lines below are Aurora's mechanics
 	isEndOfInterval := c.isEndOfInterval(PccKAuroraNRttInterval)
 	isMiEmpty := c.pcc.pccMonitorIntervals.IsEmpty()
 	// Make sure that the PCC Monitor Interval is not empty
@@ -147,6 +164,10 @@ func (c *ReproducedPccAuroraSender) OnPacketSent(
 		}
 	}
 	if c.pcc.Mode == PccSenderModeStarting {
+		if c.UseSlowStart {
+			c.pcc.AddNewPccMonitorInterval(sentTime, packetNumber, bytes, c.pcc.sendingRate)
+			return
+		}
 		if c.pcc.pccMonitorIntervalNumUseful < 2 {
 			// Buat MI Baru
 			newSendingRate := Bandwidth(.5 * float64(c.pcc.sendingRate))
@@ -219,6 +240,11 @@ func (c *ReproducedPccAuroraSender) CanSend(bytesInFlight protocol.ByteCount) bo
 }
 
 func (c *ReproducedPccAuroraSender) MaybeExitSlowStart() {
+	// if c.InSlowStart() &&
+	// 	c.hybridSlowStart.ShouldExitSlowStart(c.pcc.rttStats.LatestRTT(), c.pcc.rttStats.MinRTT(), c.GetCongestionWindow()/c.pcc.maxDatagramSize) {
+	// 	// exit slow start
+	// 	c.pcc.Mode = PccSenderModePccProbing
+	// }
 }
 
 func (c *ReproducedPccAuroraSender) OnPacketAcked(
@@ -228,6 +254,18 @@ func (c *ReproducedPccAuroraSender) OnPacketAcked(
 	eventTime time.Time,
 ) {
 	c.pcc.OnPacketAcked(ackedPacketNumber, ackedBytes, priorInFlight, eventTime)
+
+	// Slow start
+	if c.pcc.Mode == PccSenderModeStarting {
+		c.largestAckedPacketNumber = utils.MaxPacketNumber(ackedPacketNumber, c.largestAckedPacketNumber)
+		if c.InRecovery() {
+			return
+		}
+		c.maybeIncreaseRate(ackedPacketNumber, ackedBytes, priorInFlight, eventTime)
+		if c.InSlowStart() {
+			c.hybridSlowStart.OnPacketAcked(ackedPacketNumber)
+		}
+	}
 }
 
 func (c *ReproducedPccAuroraSender) OnPacketLost(
@@ -235,6 +273,12 @@ func (c *ReproducedPccAuroraSender) OnPacketLost(
 	lostBytes, priorInFlight protocol.ByteCount,
 ) {
 	c.pcc.OnPacketLost(packetNumber, lostBytes, priorInFlight)
+
+	// Exit slow start
+	if c.pcc.Mode == PccSenderModeStarting {
+		c.pcc.sendingRate = Bandwidth(float64(c.pcc.sendingRate) * renoBeta)
+		c.pcc.Mode = PccSenderModePccProbing
+	}
 }
 
 // OnRetransmissionTimeout is called on an retransmission timeout
@@ -259,6 +303,39 @@ func (c *ReproducedPccAuroraSender) GetCongestionWindow() protocol.ByteCount {
 
 func (c *ReproducedPccAuroraSender) isEndOfInterval(nRttInterval float64) bool {
 	return c.pcc.isEndOfInterval(nRttInterval)
+}
+
+// Called when we receive an ack. Normal TCP tracks how many packets one ack
+// represents, but quic has a separate ack for each packet.
+func (c *ReproducedPccAuroraSender) maybeIncreaseRate(
+	_ protocol.PacketNumber,
+	ackedBytes protocol.ByteCount,
+	priorInFlight protocol.ByteCount,
+	eventTime time.Time,
+) {
+	// Do not increase the congestion window unless the sender is close to using
+	// the current window.
+	if !c.isCwndLimited(priorInFlight) {
+		return
+	}
+	if c.InSlowStart() {
+		// TCP slow start, exponential growth, increase by one for each ACK.
+		c.pcc.sendingRate += Bandwidth(c.pcc.maxDatagramSize * 8)
+		currentMi, _ := c.pcc.pccMonitorIntervals.Back()
+		currentMi.SendingRate = c.pcc.sendingRate
+		c.pcc.pccCentralSendingRate = c.pcc.sendingRate
+		return
+	}
+}
+
+func (c *ReproducedPccAuroraSender) isCwndLimited(bytesInFlight protocol.ByteCount) bool {
+	congestionWindow := c.GetCongestionWindow()
+	if bytesInFlight >= congestionWindow {
+		return true
+	}
+	availableBytes := congestionWindow - bytesInFlight
+	slowStartLimited := c.InSlowStart() && bytesInFlight > congestionWindow/2
+	return slowStartLimited || availableBytes <= maxBurstPackets*c.pcc.maxDatagramSize
 }
 
 type PccPythonRateController struct {

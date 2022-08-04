@@ -135,6 +135,7 @@ func newSentPacketHandler(
 	congestion := congestion.NewReproducedPccAuroraSender(
 		rttStats,
 		initialMaxDatagramSize,
+		true,
 		tracer,
 	)
 
