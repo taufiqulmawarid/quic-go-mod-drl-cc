@@ -257,7 +257,7 @@ func (c *ReproducedPccAuroraSender) OnPacketAcked(
 
 	// Slow start
 	if c.pcc.Mode == PccSenderModeStarting {
-		c.largestAckedPacketNumber = utils.MaxPacketNumber(ackedPacketNumber, c.largestAckedPacketNumber)
+		c.largestAckedPacketNumber = utils.Max(ackedPacketNumber, c.largestAckedPacketNumber)
 		if c.InRecovery() {
 			return
 		}
