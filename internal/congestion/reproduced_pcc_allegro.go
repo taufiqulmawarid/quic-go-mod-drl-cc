@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
+	"strconv"
 	"time"
 
 	deque "github.com/edwingeng/deque/v2"
@@ -12,16 +14,26 @@ import (
 	"github.com/lucas-clemente/quic-go/logging"
 )
 
+var PccDefaultNRttInterval float64 = 3
+
 const (
 	PccStartingSendingRate             Bandwidth = 512 * 1000
 	PccKProbingStepSize                          = 0.01
 	PccKMaxProbingStepSize                       = 0.05
 	PccKDecisionMadeStepSize                     = 0.02
-	PccNRttInterval                    float64   = 3
 	PccKInitialRTT                               = 10 * time.Millisecond
 	PccKNumIntervalGroupsInProbing               = 2
 	PccKRttFluctuationToleranceRatio             = 0.2
 	PccKConstantInitialMaxDatagramSize           = protocol.ByteCount(protocol.InitialPacketSizeIPv4)
+)
+
+// Type IntervalRTTEstimator
+var IntervalRTTEstimatorType int = IntervalRTTSmoothedEstimatorType
+
+const (
+	IntervalRTTSmoothedEstimatorType      = iota // 0
+	IntervalRTTJacobsonKarelEstimatorType        // 1
+	IntervalRTTMinFilterEstimatorType            // 2
 )
 
 type PccSendMode uint8
@@ -60,6 +72,8 @@ type ReproducedPccAllegroSender struct {
 	// Rate Direction
 	pccRateDirection PccRateDirection
 	// Try to collect PCC Monitor Interval
+	pccIntervalRTTEstimator     IntervalRTTEstimator
+	pccNRttInterval             float64
 	pccMonitorIntervals         *deque.Deque[*PccMonitorInterval]
 	pccMonitorIntervalNumUseful int
 	// Number of rounds sender remains in current mode.
@@ -119,6 +133,25 @@ func newReproducedPccAllegroSender(
 	initialMaxCongestionWindow protocol.ByteCount,
 	tracer logging.ConnectionTracer,
 ) *ReproducedPccAllegroSender {
+	// Collect command's arguments
+	for i, ivar := range os.Args {
+		if ivar == "-interval-rtt-estimator" {
+			argVal := os.Args[i+1]
+			intVal, err := strconv.Atoi(argVal)
+			if err != nil {
+				panic("The data type of interval-rtt-estimator is not int")
+			}
+			IntervalRTTEstimatorType = intVal
+		} else if ivar == "-interval-rtt-n" {
+			argVal := os.Args[i+1]
+			floatVal, err := strconv.ParseFloat(argVal, 64)
+			if err != nil {
+				panic("The data type of interval-rtt-n is not float")
+			}
+			PccDefaultNRttInterval = floatVal
+		}
+	}
+
 	c := &ReproducedPccAllegroSender{
 		rttStats:        rttStats,
 		tracer:          tracer,
@@ -134,6 +167,8 @@ func newReproducedPccAllegroSender(
 	c.pccRounds = 1
 
 	// Create initial PCC Monitor Interval
+	c.pccNRttInterval = PccDefaultNRttInterval
+	c.pccIntervalRTTEstimator = NewIntervalRTTEstimator(IntervalRTTEstimatorType, rttStats)
 	c.pccMonitorIntervals = deque.NewDeque[*PccMonitorInterval]()
 	c.pccMonitorIntervals.PushBack(
 		&PccMonitorInterval{
@@ -172,7 +207,7 @@ func (c *ReproducedPccAllegroSender) OnPacketSent(
 	if !isRetransmittable {
 		return
 	}
-	isEndOfInterval := c.isEndOfInterval(PccNRttInterval)
+	isEndOfInterval := c.isEndOfInterval(c.pccNRttInterval)
 	isMiEmpty := c.pccMonitorIntervals.IsEmpty()
 	// Make sure that the PCC Monitor Interval is not empty
 	if isMiEmpty {
@@ -437,8 +472,8 @@ func (c *ReproducedPccAllegroSender) GetCongestionWindow() protocol.ByteCount {
 
 func (c *ReproducedPccAllegroSender) isEndOfInterval(nRttInterval float64) bool {
 	intervalThreshold := PccKInitialRTT
-	if c.rttStats.SmoothedRTT() > 0 {
-		intervalThreshold = time.Duration(nRttInterval * float64(c.rttStats.SmoothedRTT()))
+	if c.pccIntervalRTTEstimator.EstimatedRTT() > 0 {
+		intervalThreshold = time.Duration(nRttInterval * float64(c.pccIntervalRTTEstimator.EstimatedRTT()))
 	}
 	if time.Since(c.lastTimeChangeSendingRate) >= intervalThreshold {
 		return true
@@ -505,6 +540,7 @@ func (c *ReproducedPccAllegroSender) OnAckedPccMonitorInterval(
 	if mi.FirstPacketAckedTime.IsZero() {
 		mi.FirstPacketAckedTime = eventTime
 	}
+	c.pccIntervalRTTEstimator.AddRTTSample(c.rttStats.LatestRTT(), eventTime)
 }
 
 func (c *ReproducedPccAllegroSender) OnLostPccMonitorInterval(
@@ -556,4 +592,103 @@ func CalculateUtilityAllegroV1(mi *PccMonitorInterval) float64 {
 
 func sigmoidAlphaFunc(x float64) float64 {
 	return 1. / (1 + math.Exp(-pccKLossCoefficient*x))
+}
+
+func NewIntervalRTTEstimator(t int, rtt *utils.RTTStats) IntervalRTTEstimator {
+	switch t {
+	case IntervalRTTSmoothedEstimatorType:
+		return NewIntervalRTTSmoothedEstimator(rtt)
+	case IntervalRTTJacobsonKarelEstimatorType:
+		return NewIntervalRTTJacobsonKarelEstimator(rtt)
+	case IntervalRTTMinFilterEstimatorType:
+		return NewIntervalRTTMinFilterEstimator(rtt)
+	default:
+		return NewIntervalRTTSmoothedEstimator(rtt)
+	}
+}
+
+type IntervalRTTEstimator interface {
+	EstimatedRTT() time.Duration
+	AddRTTSample(currentRTT time.Duration, eventTime time.Time)
+}
+
+type IntervalRTTSmoothedEstimator struct {
+	rttStats *utils.RTTStats
+}
+
+func NewIntervalRTTSmoothedEstimator(rttStats *utils.RTTStats) *IntervalRTTSmoothedEstimator {
+	intervalRTTEstimator := &IntervalRTTSmoothedEstimator{
+		rttStats: rttStats,
+	}
+	return intervalRTTEstimator
+}
+
+func (i *IntervalRTTSmoothedEstimator) EstimatedRTT() time.Duration {
+	return i.rttStats.SmoothedRTT()
+}
+
+func (i *IntervalRTTSmoothedEstimator) AddRTTSample(currentRTT time.Duration, eventTime time.Time) {}
+
+type IntervalRTTJacobsonKarelEstimator struct {
+	rttStats *utils.RTTStats
+}
+
+func NewIntervalRTTJacobsonKarelEstimator(rttStats *utils.RTTStats) *IntervalRTTJacobsonKarelEstimator {
+	intervalRTTEstimator := &IntervalRTTJacobsonKarelEstimator{rttStats: rttStats}
+	return intervalRTTEstimator
+}
+
+func (i *IntervalRTTJacobsonKarelEstimator) EstimatedRTT() time.Duration {
+	return i.rttStats.SmoothedRTT() + utils.Max(4*i.rttStats.MeanDeviation(), protocol.TimerGranularity)
+}
+
+func (i *IntervalRTTJacobsonKarelEstimator) AddRTTSample(currentRTT time.Duration, eventTime time.Time) {
+}
+
+type RTTSeries struct {
+	EventTime time.Time
+	Val       time.Duration
+}
+
+type IntervalRTTMinFilterEstimator struct {
+	vals *deque.Deque[RTTSeries]
+	// extreme time.Duration
+}
+
+// Inspired by Copa
+// https://github.com/venkatarun95/genericCC/blob/master/rtt-window.cc
+func NewIntervalRTTMinFilterEstimator(rttStats *utils.RTTStats) *IntervalRTTMinFilterEstimator {
+	intervalRTTEstimator := &IntervalRTTMinFilterEstimator{}
+	intervalRTTEstimator.vals = deque.NewDeque[RTTSeries]()
+	return intervalRTTEstimator
+}
+
+func (i *IntervalRTTMinFilterEstimator) EstimatedRTT() time.Duration {
+	if val, ok := i.vals.Front(); ok {
+		return val.Val
+	}
+	return 0
+}
+
+func (i *IntervalRTTMinFilterEstimator) AddRTTSample(currentRTT time.Duration, eventTime time.Time) {
+	for !i.vals.IsEmpty() {
+		if val, _ := i.vals.Back(); val.Val > currentRTT {
+			_ = i.vals.PopBack()
+		} else {
+			break
+		}
+	}
+	i.vals.PushBack(RTTSeries{eventTime, currentRTT})
+	i.clearOldHistory(eventTime)
+}
+
+func (i *IntervalRTTMinFilterEstimator) clearOldHistory(eventTime time.Time) {
+	for i.vals.Len() > 1 {
+		val, _ := i.vals.Front()
+		if val.EventTime.Before(eventTime.Add(-10 * time.Second)) {
+			_ = i.vals.PopFront()
+		} else {
+			break
+		}
+	}
 }

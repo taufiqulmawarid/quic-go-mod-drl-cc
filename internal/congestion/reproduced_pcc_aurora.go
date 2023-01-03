@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -61,10 +62,24 @@ func newReproducedPccAuroraSender(
 	useSlowStart bool,
 	tracer logging.ConnectionTracer,
 ) *ReproducedPccAuroraSender {
+	// Collect command's arguments
 	for i, ivar := range os.Args {
 		if ivar == "-aurora-model" {
 			tfModelPath = os.Args[i+1]
-			break
+		} else if ivar == "-interval-rtt-estimator" {
+			argVal := os.Args[i+1]
+			intVal, err := strconv.Atoi(argVal)
+			if err != nil {
+				panic("The data type of interval-rtt-estimator is not int")
+			}
+			IntervalRTTEstimatorType = intVal
+		} else if ivar == "-interval-rtt-n" {
+			argVal := os.Args[i+1]
+			floatVal, err := strconv.ParseFloat(argVal, 64)
+			if err != nil {
+				panic("The data type of interval-rtt-n is not float")
+			}
+			PccDefaultNRttInterval = floatVal
 		}
 	}
 	c := &ReproducedPccAuroraSender{
@@ -87,7 +102,7 @@ func newReproducedPccAuroraSender(
 	c.pcc.pccRounds = 1
 
 	// Aurora component
-	callFreq := 1. / PccNRttInterval
+	callFreq := 1. / PccDefaultNRttInterval
 	auroraRateController, err := NewPccPythonRateController(callFreq)
 	if err != nil {
 		panic(fmt.Sprintf("Unable to initiate aurora rate controller: %s", err))
@@ -101,6 +116,8 @@ func newReproducedPccAuroraSender(
 	c.pcc.sendingRate = c.pcc.pccCentralSendingRate * 1
 
 	// Create initial PCC Monitor Interval
+	c.pcc.pccNRttInterval = PccDefaultNRttInterval
+	c.pcc.pccIntervalRTTEstimator = NewIntervalRTTEstimator(IntervalRTTEstimatorType, rttStats)
 	c.pcc.pccMonitorIntervals = deque.NewDeque[*PccMonitorInterval]()
 	c.pcc.pccMonitorIntervals.PushBack(
 		&PccMonitorInterval{
@@ -145,7 +162,7 @@ func (c *ReproducedPccAuroraSender) OnPacketSent(
 	c.hybridSlowStart.OnPacketSent(packetNumber)
 
 	// Lines below are Aurora's mechanics
-	isEndOfInterval := c.isEndOfInterval(PccKAuroraNRttInterval)
+	isEndOfInterval := c.isEndOfInterval(c.pcc.pccNRttInterval)
 	isMiEmpty := c.pcc.pccMonitorIntervals.IsEmpty()
 	// Make sure that the PCC Monitor Interval is not empty
 	if isMiEmpty {
