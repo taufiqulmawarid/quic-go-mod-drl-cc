@@ -9,9 +9,9 @@ import (
 	"time"
 
 	deque "github.com/edwingeng/deque/v2"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/utils"
-	"github.com/lucas-clemente/quic-go/logging"
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/quic-go/quic-go/logging"
 )
 
 var PccDefaultNRttInterval float64 = 3
