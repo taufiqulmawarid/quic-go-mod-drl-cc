@@ -25,10 +25,11 @@ const (
 	PccKNumIntervalGroupsInProbing               = 2
 	PccKRttFluctuationToleranceRatio             = 0.2
 	PccKConstantInitialMaxDatagramSize           = protocol.ByteCount(protocol.InitialPacketSizeIPv4)
+	PcckMinimumPacketsPerInterval 				 = 5
 )
 
 // Type IntervalRTTEstimator
-var IntervalRTTEstimatorType int = IntervalRTTSmoothedEstimatorType
+var IntervalRTTEstimatorType int = IntervalRTTJacobsonKarelEstimatorType
 
 const (
 	IntervalRTTSmoothedEstimatorType      = iota // 0

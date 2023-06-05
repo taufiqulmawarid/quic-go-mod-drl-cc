@@ -3,7 +3,6 @@ package congestion
 import (
 	"errors"
 	"fmt"
-	"math/rand"
 	"os"
 	"strconv"
 	"sync"
@@ -19,7 +18,7 @@ import (
 const (
 	pyAuroraPath                   = "py_aurora/testing"
 	pyFilename                     = "loaded_client"
-	PccKAuroraNRttInterval float64 = 1.5
+	PccKAuroraNRttInterval float64 = 2.0
 )
 
 var tfModelPath string = "py_aurora/saved_models/icml_paper_model"
@@ -70,16 +69,18 @@ func newReproducedPccAuroraSender(
 			argVal := os.Args[i+1]
 			intVal, err := strconv.Atoi(argVal)
 			if err != nil {
-				panic("The data type of interval-rtt-estimator is not int")
+				fmt.Println("default interval-rtt-estimator", IntervalRTTEstimatorType)
+			} else {
+				IntervalRTTEstimatorType = intVal
 			}
-			IntervalRTTEstimatorType = intVal
 		} else if ivar == "-interval-rtt-n" {
 			argVal := os.Args[i+1]
 			floatVal, err := strconv.ParseFloat(argVal, 64)
 			if err != nil {
-				panic("The data type of interval-rtt-n is not float")
+				fmt.Println("default interval-rtt-n", PccDefaultNRttInterval)
+			} else {
+				PccDefaultNRttInterval = floatVal
 			}
-			PccDefaultNRttInterval = floatVal
 		}
 	}
 	c := &ReproducedPccAuroraSender{
@@ -162,71 +163,17 @@ func (c *ReproducedPccAuroraSender) OnPacketSent(
 	c.hybridSlowStart.OnPacketSent(packetNumber)
 
 	// Lines below are Aurora's mechanics
-	isEndOfInterval := c.isEndOfInterval(c.pcc.pccNRttInterval)
 	isMiEmpty := c.pcc.pccMonitorIntervals.IsEmpty()
-	// Make sure that the PCC Monitor Interval is not empty
-	if isMiEmpty {
-		panic("The PCC Monitor Interval is Empty")
-	}
-	// Update the monitor interval when:
-	// 1. Not at the end of interval
-	// 2. Monitor interval is not empty
-	if !isEndOfInterval && !isMiEmpty {
+	// Update the monitor interval when monitor interval is not empty
+	if !isMiEmpty {
 		c.pcc.OnSentPccMonitorInterval(sentTime, packetNumber, bytes)
 		return
 	}
-	if mi, ok := c.pcc.pccMonitorIntervals.Back(); ok {
-		if mi.IsUseful {
-			c.pyRateController.MonitorIntervalFinished(mi)
-		}
-	}
+	// Create new MI and estimate new sending rate if MI empty 
 	if c.pcc.Mode == PccSenderModeStarting {
 		if c.UseSlowStart {
 			c.pcc.AddNewPccMonitorInterval(sentTime, packetNumber, bytes, c.pcc.sendingRate)
 			return
-		}
-		if c.pcc.pccMonitorIntervalNumUseful < 2 {
-			// Buat MI Baru
-			newSendingRate := Bandwidth(.5 * float64(c.pcc.sendingRate))
-			if c.pcc.pccMonitorIntervalNumUseful == 1 {
-				newSendingRate = Bandwidth(2. * float64(c.pcc.sendingRate))
-			}
-			c.pcc.AddNewPccMonitorInterval(sentTime, packetNumber, bytes, newSendingRate)
-		} else {
-			// Calculate Utility Value
-			mis := c.pcc.pccMonitorIntervals.Dump()
-			misLen := len(mis)
-			if misLen < 2 {
-				panic("monitor interval is less than 2")
-			}
-			PastUtilityValue := CalculateUtilityAllegroV1(mis[misLen-2])
-			CurrentUtilityValue := CalculateUtilityAllegroV1(mis[misLen-1])
-			if CurrentUtilityValue >= PastUtilityValue {
-				for i := 0; i < misLen-1; i++ {
-					_ = c.pcc.pccMonitorIntervals.PopFront()
-				}
-				newSendingRate := Bandwidth(2. * float64(c.pcc.sendingRate))
-				c.pcc.pccRounds += 1
-				c.pcc.AddNewPccMonitorInterval(sentTime, packetNumber, bytes, newSendingRate)
-			} else {
-				c.pcc.Mode = PccSenderModePccProbing
-				c.pcc.pccRounds = 1
-				// Empty the monitor intervals
-				for i := 0; i < misLen; i++ {
-					_ = c.pcc.pccMonitorIntervals.PopFront()
-				}
-				c.pcc.pccMonitorIntervalNumUseful = 0
-				c.pcc.pccCentralSendingRate = mis[misLen-2].SendingRate
-				// Buat MI baru untuk Probing
-				newSendingRate := c.pcc.pccCentralSendingRate
-				stepSize := float64(c.pcc.pccRounds) * PccKProbingStepSize
-				if rand.Intn(2) == 0 {
-					newSendingRate = Bandwidth(float64(newSendingRate) * (1.0 + stepSize))
-				} else {
-					newSendingRate = Bandwidth(float64(newSendingRate) * (1.0 - stepSize))
-				}
-				c.pcc.AddNewPccMonitorInterval(sentTime, packetNumber, bytes, newSendingRate)
-			}
 		}
 	} else {
 		// Acquire new sending rate from model
@@ -234,11 +181,7 @@ func (c *ReproducedPccAuroraSender) OnPacketSent(
 		if err != nil {
 			panic("Unable to get new sending rate")
 		}
-		// Clear and Buat MI Baru
-		misLen := c.pcc.pccMonitorIntervals.Len()
-		for i := 0; i < misLen; i++ {
-			_ = c.pcc.pccMonitorIntervals.PopFront()
-		}
+		// Buat MI Baru
 		c.pcc.AddNewPccMonitorInterval(sentTime, packetNumber, bytes, newSendingRate)
 	}
 	// Set Sending Rate Terbaru
@@ -270,6 +213,11 @@ func (c *ReproducedPccAuroraSender) OnPacketAcked(
 	priorInFlight protocol.ByteCount,
 	eventTime time.Time,
 ) {
+	isMiEmpty := c.pcc.pccMonitorIntervals.IsEmpty()
+	// No need to update
+	if isMiEmpty {
+		return
+	}
 	c.pcc.OnPacketAcked(ackedPacketNumber, ackedBytes, priorInFlight, eventTime)
 
 	// Slow start
@@ -283,18 +231,43 @@ func (c *ReproducedPccAuroraSender) OnPacketAcked(
 			c.hybridSlowStart.OnPacketAcked(ackedPacketNumber)
 		}
 	}
+	c.CheckMonitoringInterval()
 }
 
 func (c *ReproducedPccAuroraSender) OnPacketLost(
 	packetNumber protocol.PacketNumber,
 	lostBytes, priorInFlight protocol.ByteCount,
 ) {
+	isMiEmpty := c.pcc.pccMonitorIntervals.IsEmpty()
+	// No need to update
+	if isMiEmpty {
+		return
+	}
 	c.pcc.OnPacketLost(packetNumber, lostBytes, priorInFlight)
-
+	
 	// Exit slow start
 	if c.pcc.Mode == PccSenderModeStarting {
 		c.pcc.sendingRate = Bandwidth(float64(c.pcc.sendingRate) * renoBeta)
 		c.pcc.Mode = PccSenderModePccProbing
+	}
+	c.CheckMonitoringInterval()
+}
+
+func (c *ReproducedPccAuroraSender) CheckMonitoringInterval() {
+	// End MI?
+	isEndOfInterval := c.isEndOfInterval(c.pcc.pccNRttInterval)
+	// Make sure that the PCC Monitor Interval is not empty
+	if isEndOfInterval {
+		if mi, ok := c.pcc.pccMonitorIntervals.Back(); ok {
+			if mi.IsUseful {
+				c.pyRateController.MonitorIntervalFinished(mi)
+			}
+		}
+		// Clear MI
+		misLen := c.pcc.pccMonitorIntervals.Len()
+		for i := 0; i < misLen; i++ {
+			_ = c.pcc.pccMonitorIntervals.PopFront()
+		}
 	}
 }
 
