@@ -9,6 +9,9 @@ race.[0-9]*
 *.key
 *.crt
 *.csr
+*.pyc
+
+*/__pycache__/*
 
 fuzzing/*/*.zip
 fuzzing/*/coverprofile

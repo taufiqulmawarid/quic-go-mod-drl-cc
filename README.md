@@ -1,63 +1,72 @@
-# A QUIC implementation in pure Go
+# Modified quic-go to support congestion control based on deep reinforcement learning
 
-<img src="docs/quic.png" width=303 height=124>
+This repository stores the source code of this paper.
+> Naqvi, H. A., Hilman, M. H., & Anggorojati, B. (2023). Implementability improvement of deep reinforcement learning based congestion control in cellular network. In Computer Networks (Vol. 233, p. 109874). Elsevier BV. https://doi.org/10.1016/j.comnet.2023.109874
 
-[![PkgGoDev](https://pkg.go.dev/badge/github.com/quic-go/quic-go)](https://pkg.go.dev/github.com/quic-go/quic-go)
-[![Code Coverage](https://img.shields.io/codecov/c/github/quic-go/quic-go/master.svg?style=flat-square)](https://codecov.io/gh/quic-go/quic-go/)
+It is the deployment part of congestion control based on deep reinforcement learning within quic as transport protocol. The congestion control basically follows Aurora design with some modification to improve its stability. If you want to train following the paper's procedure, please go to [this repository](https://github.com/haidlir/ns3-drl-cc). However, you can also use the Aurora's trained model in [here](https://github.com/PCCproject/PCC-RL/issues/5#issuecomment-570252217).
 
-quic-go is an implementation of the QUIC protocol ([RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000), [RFC 9001](https://datatracker.ietf.org/doc/html/rfc9001), [RFC 9002](https://datatracker.ietf.org/doc/html/rfc9002)) in Go, including the Unreliable Datagram Extension ([RFC 9221](https://datatracker.ietf.org/doc/html/rfc9221)) and Datagram Packetization Layer Path MTU
-   Discovery (DPLPMTUD, [RFC 8899](https://datatracker.ietf.org/doc/html/rfc8899)). It has support for HTTP/3 ([RFC 9114](https://datatracker.ietf.org/doc/html/rfc9114)), including QPACK ([RFC 9204](https://datatracker.ietf.org/doc/html/rfc9204)).
+> **Note**
+> You can find the original quic-go README text in [here](README-original.md).
 
-In addition to the RFCs listed above, it currently implements the [IETF QUIC draft-29](https://tools.ietf.org/html/draft-ietf-quic-transport-29). Support for draft-29 will eventually be dropped, as it is phased out of the ecosystem.
-
-## Guides
-
-*We currently support Go 1.19.x and Go 1.20.x*
-
-Running tests:
-
-    go test ./...
-
-### QUIC without HTTP/3
-
-Take a look at [this echo example](example/echo/echo.go).
-
-## Usage
-
-### As a server
-
-See the [example server](example/main.go). Starting a QUIC server is very similar to the standard lib http in go:
-
-```go
-http.Handle("/", http.FileServer(http.Dir(wwwDir)))
-http3.ListenAndServeQUIC("localhost:4242", "/path/to/cert/chain.pem", "/path/to/privkey.pem", nil)
+# How to use
+## Dependency
+The inference process requires python's tensorflow to decide the next sending rate. You need to setup python 3.7.16 and install the package listed in the [requirements file](example/server_test/py-3.7.16-requirements.txt).
+```python
+$ pip install -r py-3.7.16-requirements.txt
 ```
 
-### As a client
+## As a Server
+See the [example server](example/server_test) folder. It setups the HTTP 3 listener.
+1. Config the [sent_packet_handler](https://github.com/haidlir/quic-go-mod-drl-cc/blob/8dbb38c466ab81253e94243f6b28a87016e2b014/internal/ackhandler/sent_packet_handler.go#L134) to use Aurora as congestion control.
 
-See the [example client](example/client/main.go). Use a `http3.RoundTripper` as a `Transport` in a `http.Client`.
+```golang
+	// Reproduced PCC Aurora Sender
+	congestion := congestion.NewReproducedPccAuroraSender(
+		rttStats,
+		initialMaxDatagramSize,
+		true,
+		tracer,
+	)
+```
 
-```go
-http.Client{
-  Transport: &http3.RoundTripper{},
+2. Extract the trained model into the [saved_models folder](example/server_test/py_aurora/saved_models/).
+3. Compile the [main.go file](example/server_test/main.go) to produce a binary file.
+4. Run the binary file.
+```bash
+$ ./<binary-file> -bind 0.0.0.0:6121 -aurora-model ./py_aurora/saved_models/<model-folder> -interval-rtt-n 2.0 -interval-rtt-estimator 1
+```
+
+## As a Client
+See the [example client](example/client_test) folder.
+
+1. Config the [sent_packet_handler](https://github.com/haidlir/quic-go-mod-drl-cc/blob/8dbb38c466ab81253e94243f6b28a87016e2b014/internal/ackhandler/sent_packet_handler.go#L118) to use the default quic-go's congestion control.
+```golang
+	// Cubic Sender
+	congestion := congestion.NewCubicSender(
+		congestion.DefaultClock{},
+		rttStats,
+		initialMaxDatagramSize,
+		true, // use Reno
+		tracer,
+	)
+```
+2. Compile the [main.go file](example/client_test/main.go) to produce a binary file.
+3. Run the binary file to download dummy data from the server.
+```bash
+$ ./<binary-file> -insecure https://127.0.0.1:6121/200000000
+```
+
+# How to cite
+```latex
+@article{comnet2023-drlcc-quic,
+    title = {Implementability improvement of deep reinforcement learning based congestion control in cellular network},
+    journal = {Computer Networks},
+    volume = {233},
+    pages = {109874},
+    year = {2023},
+    issn = {1389-1286},
+    doi = {https://doi.org/10.1016/j.comnet.2023.109874},
+    url = {https://www.sciencedirect.com/science/article/pii/S1389128623003195},
+    author = {Haidlir Achmad Naqvi and Muhammad Hafizhuddin Hilman and Bayu Anggorojati}
 }
 ```
-
-## Projects using quic-go
-
-| Project                                                   | Description                                                                                             | Stars |
-|-----------------------------------------------------------|---------------------------------------------------------------------------------------------------------|-------|
-| [AdGuardHome](https://github.com/AdguardTeam/AdGuardHome) | Free and open source, powerful network-wide ads & trackers blocking DNS server.                         | ![GitHub Repo stars](https://img.shields.io/github/stars/AdguardTeam/AdGuardHome?style=flat-square) |
-| [algernon](https://github.com/xyproto/algernon)           | Small self-contained pure-Go web server with Lua, Markdown, HTTP/2, QUIC, Redis and PostgreSQL support  | ![GitHub Repo stars](https://img.shields.io/github/stars/xyproto/algernon?style=flat-square) |
-| [caddy](https://github.com/caddyserver/caddy/)            | Fast, multi-platform web server with automatic HTTPS                                                    | ![GitHub Repo stars](https://img.shields.io/github/stars/caddyserver/caddy?style=flat-square) |
-| [cloudflared](https://github.com/cloudflare/cloudflared)  | A tunneling daemon that proxies traffic from the Cloudflare network to your origins                     | ![GitHub Repo stars](https://img.shields.io/github/stars/cloudflare/cloudflared?style=flat-square) |
-| [go-libp2p](https://github.com/libp2p/go-libp2p)          | libp2p implementation in Go, powering [Kubo](https://github.com/ipfs/kubo) (IPFS) and [Lotus](https://github.com/filecoin-project/lotus) (Filecoin), among others                                   | ![GitHub Repo stars](https://img.shields.io/github/stars/libp2p/go-libp2p?style=flat-square) |
-| [OONI Probe](https://github.com/ooni/probe-cli)           | Next generation OONI Probe. Library and CLI tool.                                                       | ![GitHub Repo stars](https://img.shields.io/github/stars/ooni/probe-cli?style=flat-square) |
-| [syncthing](https://github.com/syncthing/syncthing/)      | Open Source Continuous File Synchronization                                                             | ![GitHub Repo stars](https://img.shields.io/github/stars/syncthing/syncthing?style=flat-square) |
-| [traefik](https://github.com/traefik/traefik)             | The Cloud Native Application Proxy                                                                      | ![GitHub Repo stars](https://img.shields.io/github/stars/traefik/traefik?style=flat-square) |
-| [v2ray-core](https://github.com/v2fly/v2ray-core)         | A platform for building proxies to bypass network restrictions                                          | ![GitHub Repo stars](https://img.shields.io/github/stars/v2fly/v2ray-core?style=flat-square) |
-| [YoMo](https://github.com/yomorun/yomo)                   | Streaming Serverless Framework for Geo-distributed System                                               | ![GitHub Repo stars](https://img.shields.io/github/stars/yomorun/yomo?style=flat-square) |
-
-## Contributing
-
-We are always happy to welcome new contributors! We have a number of self-contained issues that are suitable for first-time contributors, they are tagged with [help wanted](https://github.com/quic-go/quic-go/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22). If you have any questions, please feel free to reach out by opening an issue or leaving a comment.
