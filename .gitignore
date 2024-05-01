@@ -22,5 +22,6 @@ fuzzing/*/corpus/
 
 gomock_reflect_*/
 
-example/client_test/
-example/server_test/
+# example/client_test/
+# example/server_test/
+!py-3.7.16-requirements.txt
