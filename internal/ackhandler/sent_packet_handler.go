@@ -115,29 +115,34 @@ func newSentPacketHandler(
 	logger utils.Logger,
 ) *sentPacketHandler {
 
-	// Cubic Sender
-	// congestion := congestion.NewCubicSender(
-	// 	congestion.DefaultClock{},
-	// 	rttStats,
-	// 	initialMaxDatagramSize,
-	// 	true, // use Reno
-	// 	tracer,
-	// )
+	useAurora := false // set to true if you want to use Aurora sender, false for Cubic sender
+
+	var congestionMethod congestion.SendAlgorithmWithDebugInfos
+	if useAurora {
+		// Reproduced PCC Aurora Sender
+		congestionMethod = congestion.NewReproducedPccAuroraSender(
+			rttStats,
+			initialMaxDatagramSize,
+			true,
+			tracer,
+		)
+	} else {
+		// Cubic Sender
+		congestionMethod = congestion.NewCubicSender(
+			congestion.DefaultClock{},
+			rttStats,
+			initialMaxDatagramSize,
+			true, // use Reno
+			tracer,
+		)
+	}
 
 	// Reproduced PCC Allegro Sender
-	// congestion := congestion.NewReproducedPccAllegroSender(
+	// congestionMethod := congestion.NewReproducedPccAllegroSender(
 	// 	rttStats,
 	// 	initialMaxDatagramSize,
 	// 	tracer,
 	// )
-
-	// Reproduced PCC Aurora Sender
-	congestion := congestion.NewReproducedPccAuroraSender(
-		rttStats,
-		initialMaxDatagramSize,
-		true,
-		tracer,
-	)
 
 	return &sentPacketHandler{
 		peerCompletedAddressValidation: pers == protocol.PerspectiveServer,
@@ -146,7 +151,7 @@ func newSentPacketHandler(
 		handshakePackets:               newPacketNumberSpace(0, false, rttStats),
 		appDataPackets:                 newPacketNumberSpace(0, true, rttStats),
 		rttStats:                       rttStats,
-		congestion:                     congestion,
+		congestion:                     congestionMethod,
 		perspective:                    pers,
 		tracer:                         tracer,
 		logger:                         logger,
