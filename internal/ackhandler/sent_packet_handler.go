@@ -115,32 +115,27 @@ func newSentPacketHandler(
 	logger utils.Logger,
 ) *sentPacketHandler {
 
-	useAurora := false // set to true if you want to use Aurora sender, false for Cubic sender
-
-	var congestionMethod congestion.SendAlgorithmWithDebugInfos
-	if useAurora {
-		// Reproduced PCC Aurora Sender
-		congestionMethod = congestion.NewReproducedPccAuroraSender(
-			rttStats,
-			initialMaxDatagramSize,
-			true,
-			tracer,
-		)
-	} else {
-		// Cubic Sender
-		congestionMethod = congestion.NewCubicSender(
-			congestion.DefaultClock{},
-			rttStats,
-			initialMaxDatagramSize,
-			true, // use Reno
-			tracer,
-		)
-	}
+	// Cubic Sender
+	congestion := congestion.NewCubicSender(
+		congestion.DefaultClock{},
+		rttStats,
+		initialMaxDatagramSize,
+		true, // use Reno
+		tracer,
+	)
 
 	// Reproduced PCC Allegro Sender
-	// congestionMethod := congestion.NewReproducedPccAllegroSender(
+	// congestion := congestion.NewReproducedPccAllegroSender(
 	// 	rttStats,
 	// 	initialMaxDatagramSize,
+	// 	tracer,
+	// )
+
+	// Reproduced PCC Aurora Sender
+	// congestion := congestion.NewReproducedPccAuroraSender(
+	// 	rttStats,
+	// 	initialMaxDatagramSize,
+	// 	true,
 	// 	tracer,
 	// )
 
@@ -151,7 +146,7 @@ func newSentPacketHandler(
 		handshakePackets:               newPacketNumberSpace(0, false, rttStats),
 		appDataPackets:                 newPacketNumberSpace(0, true, rttStats),
 		rttStats:                       rttStats,
-		congestion:                     congestionMethod,
+		congestion:                     congestion,
 		perspective:                    pers,
 		tracer:                         tracer,
 		logger:                         logger,

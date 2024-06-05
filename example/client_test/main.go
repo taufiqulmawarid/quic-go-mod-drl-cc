@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -52,7 +51,8 @@ func main() {
 	defer roundTripper.Close()
 	hclient := &http.Client{
 		Transport: roundTripper,
-		Timeout:   5 * time.Second,
+		// Timeout:   5 * time.Second,
+		Timeout: 0,
 	}
 
 	var wg sync.WaitGroup
